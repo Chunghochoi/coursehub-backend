@@ -6,35 +6,54 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- DỮ LIỆU MẪU (DATABASE GIẢ LẬP) ---
-// Trong thực tế, bạn nên sử dụng cơ sở dữ liệu như MongoDB hoặc PostgreSQL.
-const db = {
-    users: {
-        'admin@coursehub.com': { id: 'admin01', username: 'Admin', role: 'ADMIN' },
-        'subadmin@coursehub.com': { id: 'subadmin01', username: 'Phó Admin', role: 'SUB_ADMIN' },
-        'chung@coursehub.com': { id: 'user01', username: 'ChungHo', role: 'MEMBER' },
-        'user2@coursehub.com': { id: 'user02', username: 'User2', role: 'MEMBER' }
-    },
-    courses: require('./courses.json') // Tải khóa học từ file JSON
+// --- DATABASE GIẢ LẬP ---
+const dbPath = path.join(__dirname, 'db.json');
+
+let db = {
+    users: {},
+    courses: []
 };
+
+// Đọc dữ liệu từ db.json nếu file tồn tại
+try {
+    if (fs.existsSync(dbPath)) {
+        const data = fs.readFileSync(dbPath, 'utf8');
+        db = JSON.parse(data);
+    } else {
+        // Nếu không có file, tạo dữ liệu mẫu
+        db = {
+            users: {
+                'admin@coursehub.com': { id: 'admin01', username: 'Admin', email: 'admin@coursehub.com', password: 'adminpassword', role: 'ADMIN' },
+                'subadmin@coursehub.com': { id: 'subadmin01', username: 'Phó Admin', email: 'subadmin@coursehub.com', password: 'subadminpassword', role: 'SUB_ADMIN' },
+                'chung@coursehub.com': { id: 'user01', username: 'ChungHo', email: 'chung@coursehub.com', password: 'password123', role: 'MEMBER' }
+            },
+            courses: []
+        };
+        saveDbToFile(); // Lưu lại file
+    }
+} catch (err) {
+    console.error("Lỗi khi đọc hoặc khởi tạo db.json:", err);
+}
+
 
 // --- MIDDLEWARES ---
 app.use(cors());
-app.use(express.json()); // Cho phép server đọc dữ liệu JSON từ request
+app.use(express.json());
 
-// Hàm trợ giúp để lưu dữ liệu vào file courses.json
-const saveCoursesToFile = () => {
-    fs.writeFile(path.join(__dirname, 'courses.json'), JSON.stringify(db.courses, null, 2), (err) => {
-        if (err) console.error('Lỗi khi ghi file courses.json:', err);
+// Hàm trợ giúp để lưu dữ liệu vào file db.json
+const saveDbToFile = () => {
+    fs.writeFile(dbPath, JSON.stringify(db, null, 2), (err) => {
+        if (err) console.error('Lỗi khi ghi file db.json:', err);
     });
 };
 
 // --- API ENDPOINTS ---
 
-// [GET] Lấy danh sách tất cả người dùng (chỉ dành cho Admin)
+// [GET] Lấy danh sách tất cả người dùng
 app.get('/api/users', (req, res) => {
-    // Trong thực tế, cần có xác thực token của admin
-    res.json(Object.values(db.users)); // Trả về một mảng các đối tượng user
+    // Chuyển đổi object users thành mảng để dễ xử lý ở frontend
+    const usersArray = Object.values(db.users);
+    res.json(usersArray);
 });
 
 // [GET] Lấy danh sách tất cả khóa học
@@ -49,28 +68,34 @@ app.post('/api/courses', (req, res) => {
     if (!title || !link || !category || !ownerId || !ownerUsername) {
         return res.status(400).json({ message: 'Vui lòng điền đầy đủ thông tin.' });
     }
+    
+    // Tìm vai trò của người đăng
+    const ownerUser = Object.values(db.users).find(u => u.id === ownerId);
+    const ownerRole = ownerUser ? ownerUser.role : 'MEMBER';
+
 
     const newCourse = {
-        id: Date.now(), // Tạo ID duy nhất dựa trên thời gian
+        id: Date.now(),
         ownerId,
         ownerUsername,
+        ownerRole, // Thêm vai trò của người đăng
         title,
-        author: ownerUsername, // Mặc định tác giả là người đăng
+        author: ownerUsername,
         views: 0,
         category,
-        icon: "fas fa-book", // Icon mặc định
+        icon: "fas fa-book",
         link
     };
 
     db.courses.push(newCourse);
-    saveCoursesToFile(); // Lưu vào file
-    res.status(201).json(newCourse); // Trả về khóa học vừa tạo
+    saveDbToFile();
+    res.status(201).json(newCourse);
 });
 
 // [DELETE] Xóa một khóa học
 app.delete('/api/courses/:id', (req, res) => {
     const courseId = parseInt(req.params.id, 10);
-    const { userId, userRole } = req.body; // Lấy thông tin người thực hiện hành động
+    const { userId, userRole } = req.body;
 
     const courseIndex = db.courses.findIndex(c => c.id === courseId);
     if (courseIndex === -1) {
@@ -78,23 +103,19 @@ app.delete('/api/courses/:id', (req, res) => {
     }
 
     const courseToDelete = db.courses[courseIndex];
-    const targetOwner = db.users[Object.keys(db.users).find(key => db.users[key].id === courseToDelete.ownerId)];
-    const targetOwnerRole = targetOwner ? targetOwner.role : 'MEMBER';
 
-
-    // Logic phân quyền xóa
     let canDelete = false;
     if (userRole === 'ADMIN') {
-        canDelete = true; // Admin có thể xóa mọi thứ
-    } else if (userRole === 'SUB_ADMIN' && targetOwnerRole !== 'ADMIN') {
-        canDelete = true; // Phó Admin có thể xóa của thành viên và của Phó Admin khác
+        canDelete = true;
+    } else if (userRole === 'SUB_ADMIN' && courseToDelete.ownerRole !== 'ADMIN') {
+        canDelete = true;
     } else if (courseToDelete.ownerId === userId) {
-        canDelete = true; // Người dùng có thể tự xóa khóa học của mình
+        canDelete = true;
     }
 
     if (canDelete) {
         db.courses.splice(courseIndex, 1);
-        saveCoursesToFile();
+        saveDbToFile();
         res.status(200).json({ message: 'Đã xóa khóa học thành công.' });
     } else {
         res.status(403).json({ message: 'Bạn không có quyền xóa khóa học này.' });
@@ -106,7 +127,6 @@ app.put('/api/users/:id/promote', (req, res) => {
     const { adminId, adminRole } = req.body;
     const targetUserId = req.params.id;
 
-    // Chỉ Admin mới có quyền thăng cấp
     if (adminRole !== 'ADMIN') {
         return res.status(403).json({ message: 'Bạn không có quyền thực hiện hành động này.' });
     }
@@ -116,20 +136,68 @@ app.put('/api/users/:id/promote', (req, res) => {
         return res.status(404).json({ message: 'Không tìm thấy người dùng.' });
     }
     
-    // Thực hiện thăng cấp
-    db.users[targetUserEmail].role = 'SUB_ADMIN';
-    res.status(200).json({ message: `Đã thăng cấp ${db.users[targetUserEmail].username} thành Phó Admin.` });
+    if (db.users[targetUserEmail].role === 'MEMBER') {
+        db.users[targetUserEmail].role = 'SUB_ADMIN';
+        saveDbToFile();
+        res.status(200).json({ message: `Đã thăng cấp ${db.users[targetUserEmail].username} thành Phó Admin.` });
+    } else {
+        res.status(400).json({ message: 'Không thể thăng cấp cho người dùng này.' });
+    }
+});
+
+// [POST] Đăng ký
+app.post('/api/register', (req, res) => {
+    const { username, email, password } = req.body;
+
+    if (!username || !email || !password) {
+        return res.status(400).json({ message: 'Vui lòng điền đầy đủ thông tin.' });
+    }
+    
+    // Kiểm tra email hoặc username đã tồn tại chưa
+    const emailExists = !!db.users[email];
+    const usernameExists = Object.values(db.users).some(u => u.username.toLowerCase() === username.toLowerCase());
+
+    if (emailExists) {
+        return res.status(409).json({ message: 'Email này đã được sử dụng.' });
+    }
+    if (usernameExists) {
+        return res.status(409).json({ message: 'Tên đăng nhập này đã tồn tại.' });
+    }
+
+    const newUser = {
+        id: `user${Date.now()}`,
+        username,
+        email,
+        password, // Lưu ý: Trong thực tế cần mã hóa mật khẩu!
+        role: 'MEMBER'
+    };
+
+    db.users[email] = newUser;
+    saveDbToFile();
+    res.status(201).json({ message: 'Đăng ký thành công! Vui lòng đăng nhập.' });
 });
 
 
 // [POST] Đăng nhập
 app.post('/api/login', (req, res) => {
-    const { email } = req.body;
-    const user = db.users[email];
-    if (user) {
-        res.json({ success: true, user });
+    const { identifier, password } = req.body;
+
+    if (!identifier || !password) {
+        return res.status(400).json({ message: 'Vui lòng nhập đầy đủ thông tin.' });
+    }
+
+    // Tìm người dùng bằng email hoặc username
+    let user = db.users[identifier]; // Tìm bằng email
+    if (!user) {
+        user = Object.values(db.users).find(u => u.username.toLowerCase() === identifier.toLowerCase()); // Tìm bằng username
+    }
+
+    if (user && user.password === password) {
+        // Không gửi lại mật khẩu cho client
+        const { password, ...userToSend } = user;
+        res.json({ success: true, user: userToSend });
     } else {
-        res.status(401).json({ success: false, message: 'Email không tồn tại.' });
+        res.status(401).json({ success: false, message: 'Thông tin đăng nhập không chính xác.' });
     }
 });
 
